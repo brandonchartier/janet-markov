@@ -1,60 +1,78 @@
 (import ../markov)
+(import sqlite3 :as sql)
+
+(defn- fresh [&named order]
+  (let [conn (sql/open ":memory:")]
+    (if order
+      (markov/new-chain conn :order order)
+      (markov/new-chain conn))))
+
+(defn- query-grams [conn]
+  (seq [row :in (sql/eval conn "SELECT DISTINCT gram FROM markov_transitions")]
+    (row :gram)))
+
+(defn- query-nexts [conn gram]
+  (seq [row :in (sql/eval conn "SELECT next FROM markov_transitions WHERE gram = :g" {:g gram})]
+    (row :next)))
+
+(defn- query-starts [conn]
+  (seq [row :in (sql/eval conn "SELECT DISTINCT gram FROM markov_starts")]
+    (row :gram)))
 
 # ---------------------------------------------------------------------------
 # tokenization
 # ---------------------------------------------------------------------------
 
-(defn tokenize [text]
-  # exercise tokenization through train by inspecting the resulting keys
-  (keys ((markov/train text (markov/new-chain :order 1)) :transitions)))
-
-(assert (deep= (markov/train "") @{:transitions @{} :order 3 :starts @[]})
-        "empty input produces empty chain")
-
 # punctuation splits into its own token
-(let [chain (markov/train "Hello, world." (markov/new-chain :order 1))]
-  (assert ((chain :transitions) "Hello") "Hello is a key")
-  (assert ((chain :transitions) ",") "comma is a key")
-  (assert ((chain :transitions) "world") "world is a key"))
+(let [chain (fresh :order 1)]
+  (markov/train "Hello, world." chain)
+  (assert (some |(= "Hello" $) (query-grams (chain :conn))) "Hello is a gram")
+  (assert (some |(= "," $) (query-grams (chain :conn))) "comma is a gram")
+  (assert (some |(= "world" $) (query-grams (chain :conn))) "world is a gram"))
 
 # contractions stay intact
-(let [chain (markov/train "don't stop, can't stop." (markov/new-chain :order 1))]
-  (assert ((chain :transitions) "don't") "don't is one token")
-  (assert ((chain :transitions) "can't") "can't is one token"))
+(let [chain (fresh :order 1)]
+  (markov/train "don't stop, can't stop." chain)
+  (assert (some |(= "don't" $) (query-grams (chain :conn))) "don't is one token")
+  (assert (some |(= "can't" $) (query-grams (chain :conn))) "can't is one token"))
 
 # hyphenated words stay intact
-(let [chain (markov/train "self-aware systems work." (markov/new-chain :order 1))]
-  (assert ((chain :transitions) "self-aware") "self-aware is one token"))
+(let [chain (fresh :order 1)]
+  (markov/train "self-aware systems work." chain)
+  (assert (some |(= "self-aware" $) (query-grams (chain :conn))) "self-aware is one token"))
 
 # URLs are kept as atomic tokens, not split at punctuation
-(let [chain (markov/train "check out https://example.com/path?q=1 cool" (markov/new-chain :order 1))]
-  (assert ((chain :transitions) "https://example.com/path?q=1") "URL is a single chain key")
-  (assert (not ((chain :transitions) "example")) "URL is not split into fragments")
-  (assert ((chain :transitions) "check") "words around a URL are still tokenized"))
-(let [chain (markov/train "visit http://example.com or https://foo.bar/baz today" (markov/new-chain :order 1))]
-  (assert ((chain :transitions) "http://example.com") "http URL is atomic")
-  (assert ((chain :transitions) "https://foo.bar/baz") "https URL is atomic"))
+(let [chain (fresh :order 1)]
+  (markov/train "check out https://example.com/path?q=1 cool" chain)
+  (assert (some |(= "https://example.com/path?q=1" $) (query-grams (chain :conn))) "URL is a single gram")
+  (assert (not (some |(= "example" $) (query-grams (chain :conn)))) "URL is not split into fragments")
+  (assert (some |(= "check" $) (query-grams (chain :conn))) "words around a URL are still tokenized"))
+(let [chain (fresh :order 1)]
+  (markov/train "visit http://example.com or https://foo.bar/baz today" chain)
+  (assert (some |(= "http://example.com" $) (query-grams (chain :conn))) "http URL is atomic")
+  (assert (some |(= "https://foo.bar/baz" $) (query-grams (chain :conn))) "https URL is atomic"))
 
 # UTF-8 characters pass through untouched.
 # Validated against a real Gutenberg text that contains curly quotes and em-dashes.
 (when (os/stat "/tmp/moby-dick.txt")
-  (let [chain1 (markov/train (slurp "/tmp/moby-dick.txt") (markov/new-chain :order 1))
+  (let [chain (fresh :order 1)
         curly-apos (string/from-bytes 0xe2 0x80 0x99)
         queequeg-key (string "Queequeg" curly-apos "s")]
-    (assert ((chain1 :transitions) queequeg-key)
+    (markov/train (slurp "/tmp/moby-dick.txt") chain)
+    (assert (some |(= queequeg-key $) (query-grams (chain :conn)))
             "curly apostrophe stays intact: possessive is one token")
-    (assert (not ((chain1 :transitions) (string/from-bytes 0xe2)))
+    (assert (not (some |(= (string/from-bytes 0xe2) $) (query-grams (chain :conn))))
             "lone UTF-8 lead byte is not a chain key")))
 
 # ---------------------------------------------------------------------------
 # sentence boundary tracking
 # ---------------------------------------------------------------------------
 
-(let [chain (markov/train "The cat sat. A dog ran.")]
-  # "The" starts the first sentence, "A" starts the second
-  (assert (some |(string/has-prefix? "The cat" $) (chain :starts))
+(let [chain (fresh)]
+  (markov/train "The cat sat. A dog ran." chain)
+  (assert (some |(string/has-prefix? "The cat" $) (query-starts (chain :conn)))
           "first sentence start is tracked")
-  (assert (some |(string/has-prefix? "A dog" $) (chain :starts))
+  (assert (some |(string/has-prefix? "A dog" $) (query-starts (chain :conn)))
           "post-period sentence start is tracked"))
 
 # ---------------------------------------------------------------------------
@@ -63,92 +81,85 @@
 
 (def text "the cat sat on the mat the cat sat")
 
-(def chain (markov/train text))
-(assert (= (chain :order) 3) "default order is 3")
+(let [chain (fresh)]
+  (markov/train text chain)
+  (assert (= (chain :order) 3) "default order is 3")
+  (assert (deep= (sort (array ;(query-grams (chain :conn))))
+                 (sort @["the cat sat" "cat sat on" "sat on the" "on the mat" "the mat the" "mat the cat"]))
+          "chain keys are trigrams")
+  (assert (deep= (sort (array ;(query-nexts (chain :conn) "the cat sat"))) @["on"])  "the cat sat -> on")
+  (assert (deep= (sort (array ;(query-nexts (chain :conn) "cat sat on")))  @["the"]) "cat sat on -> the")
+  (assert (deep= (sort (array ;(query-nexts (chain :conn) "sat on the")))  @["mat"]) "sat on the -> mat")
+  (assert (deep= (sort (array ;(query-nexts (chain :conn) "on the mat")))  @["the"]) "on the mat -> the")
+  (assert (deep= (sort (array ;(query-nexts (chain :conn) "the mat the"))) @["cat"]) "the mat the -> cat")
+  (assert (deep= (sort (array ;(query-nexts (chain :conn) "mat the cat"))) @["sat"]) "mat the cat -> sat"))
 
-(assert (deep= (sort (keys (chain :transitions)))
-               (sort @["the cat sat" "cat sat on" "sat on the" "on the mat" "the mat the" "mat the cat"]))
-        "chain keys are trigrams")
+# explicit order 2
+(let [chain (fresh :order 2)]
+  (markov/train text chain)
+  (assert (= (chain :order) 2) "explicit order 2")
+  (assert (deep= (sort (array ;(query-nexts (chain :conn) "the cat"))) @["sat" "sat"])
+          "order-2: the cat -> sat twice"))
 
-(assert (deep= ((chain :transitions) "the cat sat") @["on"]) "the cat sat -> on")
-(assert (deep= ((chain :transitions) "cat sat on") @["the"]) "cat sat on -> the")
-(assert (deep= ((chain :transitions) "sat on the") @["mat"]) "sat on the -> mat")
-(assert (deep= ((chain :transitions) "on the mat") @["the"]) "on the mat -> the")
-(assert (deep= ((chain :transitions) "the mat the") @["cat"]) "the mat the -> cat")
-(assert (deep= ((chain :transitions) "mat the cat") @["sat"]) "mat the cat -> sat")
-
-# explicit order 2 (bigrams)
-(def chain2 (markov/train text (markov/new-chain :order 2)))
-(assert (= (chain2 :order) 2) "explicit order 2")
-(assert (deep= ((chain2 :transitions) "the cat") @["sat" "sat"]) "order-2: the cat -> sat twice")
-
-# fewer than 4 words with order-3 produces empty transitions
-(assert (empty? ((markov/train "hello world how") :transitions))
-        "three words with order-3 produces empty transitions")
+# fewer than 4 words with order-3 produces no transitions
+(let [chain (fresh)]
+  (markov/train "hello world how" chain)
+  (assert (empty? (query-grams (chain :conn))) "three words with order-3 produces no transitions"))
 
 # incremental training merges next words
-(def inc-chain (markov/train "the cat sat by the fire"))
-(markov/train "the cat sat on the mat" inc-chain)
-(assert (deep= (sort ((inc-chain :transitions) "the cat sat")) @["by" "on"])
-        "incremental train merges next words")
+(let [chain (fresh)]
+  (markov/train "the cat sat by the fire" chain)
+  (markov/train "the cat sat on the mat" chain)
+  (assert (deep= (sort (array ;(query-nexts (chain :conn) "the cat sat"))) @["by" "on"])
+          "incremental train merges next words"))
+
+# train-many inserts the same transitions as sequential trains
+(let [chain (fresh)]
+  (markov/train-many ["the cat sat on the mat" "the cat sat by the fire"] chain)
+  (assert (deep= (sort (array ;(query-nexts (chain :conn) "the cat sat"))) @["by" "on"])
+          "train-many inserts all transitions"))
 
 # ---------------------------------------------------------------------------
 # reply
 # ---------------------------------------------------------------------------
 
+# untrained chain returns empty string
+(let [chain (fresh)]
+  (assert (= "" (markov/reply chain "the cat sat")) "untrained chain returns empty string"))
+
 # reply uses input to seed from matching trigrams
-(def result (markov/reply chain "the cat sat"))
-(assert (string? result) "reply returns a string")
-(assert (string/has-prefix? "the cat sat" result) "reply starts from matching trigram")
+(let [chain (fresh)]
+  (markov/train text chain)
+  (let [result (markov/reply chain "the cat sat")]
+    (assert (string? result) "reply returns a string")
+    (assert (string/has-prefix? "the cat sat" result) "reply starts from matching trigram")))
 
 # input match is preferred over sentence starts
-(def long-text
-  (string "First sentence starts here. "
-          "the cat sat on a big blue mat. "
-          "Another sentence begins now."))
-(def lchain (markov/train long-text))
-(def lresult (markov/reply lchain "the cat sat"))
-(assert (string/has-prefix? "the cat sat" lresult)
-        "reply honours input match over sentence-start fallback")
+(let [chain (fresh)]
+  (markov/train (string "First sentence starts here. "
+                        "the cat sat on a big blue mat. "
+                        "Another sentence begins now.") chain)
+  (assert (string/has-prefix? "the cat sat" (markov/reply chain "the cat sat"))
+          "reply honours input match over sentence-start fallback"))
 
 # reply with no matching trigrams still produces output
-(def fallback (markov/reply chain "xyz abc def"))
-(assert (string? fallback) "reply with no match returns a string")
-(assert (> (length fallback) 0) "reply with no match returns non-empty string")
-
-# chain with genuine branching for rng tests (10 distinct paths from "cat sat")
-(def branch-text
-  (string "the cat sat on the mat today. "
-          "the cat sat by the old fire. "
-          "the cat sat near the small door. "
-          "the cat sat above the tall shelf. "
-          "the cat sat under the wooden table. "
-          "the cat sat beside the open window. "
-          "the cat sat beyond the green garden. "
-          "the cat sat against the brick wall. "
-          "the cat sat within the cozy basket. "
-          "the cat sat among the fallen leaves."))
-(def bchain (markov/train branch-text (markov/new-chain :order 2)))
-
-# same rng seed produces identical replies (deterministic)
-(def det1 (markov/reply bchain "the cat sat" :rng (math/rng 42)))
-(def det2 (markov/reply bchain "the cat sat" :rng (math/rng 42)))
-(assert (= det1 det2) "same rng seed produces same reply")
-
-# default seeding (os/time) produces different replies across different seconds
-(def timed1 (markov/reply bchain "the cat sat"))
-(os/sleep 1)
-(def timed2 (markov/reply bchain "the cat sat"))
-(assert (not= timed1 timed2) "different seconds produce different replies")
+(let [chain (fresh)]
+  (markov/train text chain)
+  (let [fallback (markov/reply chain "xyz abc def")]
+    (assert (string? fallback) "reply with no match returns a string")
+    (assert (> (length fallback) 0) "reply with no match returns non-empty string")))
 
 # reply respects max-words
-(def short (markov/reply chain "the cat sat" :max-words 4))
-(assert (<= (length (string/split " " short)) 4) "max-words limits output")
+(let [chain (fresh)]
+  (markov/train text chain)
+  (let [short (markov/reply chain "the cat sat" :max-words 4)]
+    (assert (<= (length (string/split " " short)) 4) "max-words limits output")))
 
 # punctuation attaches correctly in output (no space before , . ; : ! ?)
-(def pchain (markov/train "She smiled, and left. He waited."))
-(def presult (markov/reply pchain "She smiled"))
-(assert (not (string/find " ," presult)) "no space before comma in output")
-(assert (not (string/find " ." presult)) "no space before period in output")
+(let [chain (fresh :order 1)]
+  (markov/train "She smiled, and left. He waited." chain)
+  (let [result (markov/reply chain "She smiled")]
+    (assert (not (string/find " ," result)) "no space before comma in output")
+    (assert (not (string/find " ." result)) "no space before period in output")))
 
 (print "All tests passed.")

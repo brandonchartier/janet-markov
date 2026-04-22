@@ -1,3 +1,5 @@
+(import sqlite3 :as sql)
+
 (def- token-peg
   ~{:break (+ :s (set ".!?,;:"))
     :word-char (if-not :break 1)
@@ -19,69 +21,116 @@
 (defn- ngram-key [gram]
   (string/join gram " "))
 
-(defn- add-transition [transitions key word]
-  (unless (transitions key)
-    (put transitions key @[]))
-  (array/push (transitions key) word))
+(def- no-space-before (peg/compile ~(set ",;:.!?")))
+
+(defn- join-tokens [tokens]
+  (reduce (fn [acc tok]
+            (if (or (empty? acc) (peg/match no-space-before tok))
+              (string acc tok)
+              (string acc " " tok)))
+          ""
+          tokens))
 
 (defn- pick [rng items]
   (get items (math/rng-int rng (length items))))
 
-(def- no-space-before (peg/compile ~(set ",;:.!?")))
+(defn- init-db [conn]
+  (sql/eval conn "CREATE TABLE IF NOT EXISTS markov_transitions (gram TEXT NOT NULL, next TEXT NOT NULL)")
+  (sql/eval conn "CREATE INDEX IF NOT EXISTS idx_markov_gram ON markov_transitions(gram)")
+  (sql/eval conn "CREATE TABLE IF NOT EXISTS markov_starts (gram TEXT NOT NULL)"))
 
-(defn- join-tokens [tokens]
-  (def buf @"")
-  (each tok tokens
-    (unless (or (empty? buf) (peg/match no-space-before tok))
-      (buffer/push buf " "))
-    (buffer/push buf tok))
-  (string buf))
+(defn- transitions-exist? [conn gram]
+  (not (empty? (sql/eval conn
+                 "SELECT 1 FROM markov_transitions WHERE gram = :g LIMIT 1"
+                 {:g gram}))))
 
-(defn- walk [transitions starts order rng start max-words]
-  (let [ws (array ;(string/split " " start))
-        stop-after (max 10 (math/floor (* max-words 0.4)))]
-    (var key start)
-    (while (and (< (length ws) max-words) (transitions key))
-      (let [tok (pick rng (transitions key))]
-        (array/push ws tok)
-        (set key (string/join (array/slice ws (- (length ws) order)) " "))
-        (when (and (> (length ws) stop-after) (sentence-end? tok))
-          (break))))
-    (join-tokens ws)))
+(defn- sentence-start? [conn gram]
+  (not (empty? (sql/eval conn
+                 "SELECT 1 FROM markov_starts WHERE gram = :g LIMIT 1"
+                 {:g gram}))))
 
-(defn- find-start [transitions starts order rng input]
-  (let [ws (tokenize input)
-        input-ngrams (map ngram-key (ngrams ws order))
-        matches (filter |(transitions $) input-ngrams)
-        starts-set (tabseq [s :in starts] s true)
-        sentence-starts (distinct (filter |(transitions $) starts))
-        best (filter |(starts-set $) matches)]
-    (cond
-      (not (empty? best)) (pick rng best)
-      (not (empty? matches)) (pick rng matches)
-      (not (empty? sentence-starts)) (pick rng sentence-starts)
-      (pick rng (keys transitions)))))
+(defn- random-next [conn gram]
+  (let [r (sql/eval conn
+             "SELECT next FROM markov_transitions WHERE gram = :g ORDER BY RANDOM() LIMIT 1"
+             {:g gram})]
+    (when (not (empty? r)) ((r 0) :next))))
 
-(defn new-chain [&named order]
-  (default order 3)
-  @{:transitions @{} :order order :starts @[]})
+(defn- random-sentence-start [conn]
+  (let [r (sql/eval conn
+             ``SELECT ms.gram FROM markov_starts ms
+               WHERE EXISTS (SELECT 1 FROM markov_transitions WHERE gram = ms.gram)
+               ORDER BY RANDOM() LIMIT 1``)]
+    (when (not (empty? r)) ((r 0) :gram))))
 
-(defn train [text &opt chain]
-  (default chain (new-chain))
-  (let [{:transitions transitions :order n :starts starts} chain
-        ws (tokenize text)]
+(defn- random-gram [conn]
+  (let [r (sql/eval conn "SELECT gram FROM markov_transitions ORDER BY RANDOM() LIMIT 1")]
+    (when (not (empty? r)) ((r 0) :gram))))
+
+(defn- insert-transition [conn gram next-tok start?]
+  (sql/eval conn "INSERT INTO markov_transitions VALUES (:gram, :next)"
+            {:gram gram :next next-tok})
+  (when start?
+    (sql/eval conn "INSERT INTO markov_starts VALUES (:gram)" {:gram gram})))
+
+(defn- train-text [conn n text]
+  (let [ws (tokenize text)]
     (each [i gram] (pairs (ngrams ws n))
-      (when-let [next-word (get ws (+ i n))]
-        (add-transition transitions (ngram-key gram) next-word)
-        (when (or (zero? i) (sentence-end? (get ws (dec i))))
-          (array/push starts (ngram-key gram))))))
+      (when-let [next-tok (get ws (+ i n))]
+        (insert-transition conn (ngram-key gram) next-tok
+                           (or (zero? i) (sentence-end? (get ws (dec i)))))))))
+
+(defn- best-start [conn order rng input]
+  (let [input-ngrams (map ngram-key (ngrams (tokenize input) order))
+        with-trans   (filter |(transitions-exist? conn $) input-ngrams)
+        at-sentence  (filter |(sentence-start? conn $) with-trans)]
+    (cond
+      (not (empty? at-sentence)) (pick rng at-sentence)
+      (not (empty? with-trans))  (pick rng with-trans)
+      (random-sentence-start conn)
+      (random-gram conn))))
+
+(defn- generate-step [conn order stop-after max-words words]
+  (let [key    (string/join (array/slice words (- (length words) order)) " ")
+        tok    (random-next conn key)
+        words+ (if tok (array ;words tok) words)]
+    (cond
+      (>= (length words) max-words)                             words
+      (nil? tok)                                                words
+      (and (> (length words+) stop-after) (sentence-end? tok)) words+
+      (generate-step conn order stop-after max-words words+))))
+
+(defn- generate [conn order start max-words]
+  (join-tokens
+    (generate-step conn order
+                   (max 10 (math/floor (* max-words 0.4)))
+                   max-words
+                   (array ;(string/split " " start)))))
+
+(defn new-chain [conn &named order]
+  (default order 3)
+  (init-db conn)
+  {:order order :conn conn})
+
+(defn trained? [chain]
+  (not (empty? (sql/eval (chain :conn) "SELECT 1 FROM markov_transitions LIMIT 1"))))
+
+(defn train [text chain]
+  (let [conn (chain :conn)]
+    (sql/eval conn "BEGIN")
+    (train-text conn (chain :order) text)
+    (sql/eval conn "COMMIT"))
+  chain)
+
+(defn train-many [texts chain]
+  (let [conn (chain :conn)]
+    (sql/eval conn "BEGIN")
+    (each text texts (train-text conn (chain :order) text))
+    (sql/eval conn "COMMIT"))
   chain)
 
 (defn reply [chain input &named max-words rng]
   (default max-words 50)
   (default rng (math/rng (os/time)))
-  (let [{:transitions transitions :order order :starts starts} chain]
-    (if (empty? transitions)
-      ""
-      (let [start (find-start transitions starts order rng input)]
-        (walk transitions starts order rng start max-words)))))
+  (if-let [start (best-start (chain :conn) (chain :order) rng input)]
+    (generate (chain :conn) (chain :order) start max-words)
+    ""))

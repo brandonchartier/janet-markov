@@ -4,7 +4,8 @@
   :author "Brandon Chartier"
   :license "GPL-3.0"
   :url "https://github.com/brandonchartier/janet-markov"
-  :repo "git+https://github.com/brandonchartier/janet-markov.git")
+  :repo "git+https://github.com/brandonchartier/janet-markov.git"
+  :dependencies ["sqlite3"])
 
 (declare-source
   :source ["markov.janet"])
