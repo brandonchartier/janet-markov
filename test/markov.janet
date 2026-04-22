@@ -26,6 +26,15 @@
 (let [chain (markov/train "self-aware systems work." (markov/new-chain :order 1))]
   (assert ((chain :transitions) "self-aware") "self-aware is one token"))
 
+# URLs are stripped and not split into fragments
+(let [chain (markov/train "check out https://example.com/path?q=1 cool" (markov/new-chain :order 1))]
+  (assert (not (some |(string/find "://" $) (keys (chain :transitions))))
+          "URL fragments are not chain keys")
+  (assert ((chain :transitions) "check") "words around a URL are still tokenized"))
+(let [chain (markov/train "http://example.com and https://foo.bar/baz" (markov/new-chain :order 1))]
+  (assert (not (some |(string/find "://" $) (keys (chain :transitions))))
+          "both http and https URLs are stripped"))
+
 # UTF-8 characters pass through untouched.
 # Validated against a real Gutenberg text that contains curly quotes and em-dashes.
 (when (os/stat "/tmp/moby-dick.txt")

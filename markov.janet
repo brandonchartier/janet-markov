@@ -3,7 +3,8 @@
     :word-char (if-not :break 1)
     :word (some :word-char)
     :punct (set ".!?,;:")
-    :main (any (+ :s (capture :word) (capture :punct)))})
+    :url (sequence (choice "https://" "http://") (some (if-not :s 1)))
+    :main (any (+ :s :url (capture :word) (capture :punct)))})
 
 (defn- tokenize [text]
   (or (peg/match token-peg text) @[]))
