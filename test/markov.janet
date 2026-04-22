@@ -26,14 +26,14 @@
 (let [chain (markov/train "self-aware systems work." (markov/new-chain :order 1))]
   (assert ((chain :transitions) "self-aware") "self-aware is one token"))
 
-# URLs are stripped and not split into fragments
+# URLs are kept as atomic tokens, not split at punctuation
 (let [chain (markov/train "check out https://example.com/path?q=1 cool" (markov/new-chain :order 1))]
-  (assert (not (some |(string/find "://" $) (keys (chain :transitions))))
-          "URL fragments are not chain keys")
+  (assert ((chain :transitions) "https://example.com/path?q=1") "URL is a single chain key")
+  (assert (not ((chain :transitions) "example")) "URL is not split into fragments")
   (assert ((chain :transitions) "check") "words around a URL are still tokenized"))
-(let [chain (markov/train "http://example.com and https://foo.bar/baz" (markov/new-chain :order 1))]
-  (assert (not (some |(string/find "://" $) (keys (chain :transitions))))
-          "both http and https URLs are stripped"))
+(let [chain (markov/train "visit http://example.com or https://foo.bar/baz today" (markov/new-chain :order 1))]
+  (assert ((chain :transitions) "http://example.com") "http URL is atomic")
+  (assert ((chain :transitions) "https://foo.bar/baz") "https URL is atomic"))
 
 # UTF-8 characters pass through untouched.
 # Validated against a real Gutenberg text that contains curly quotes and em-dashes.
