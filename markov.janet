@@ -1,9 +1,9 @@
 (def- token-peg
-  ~{:break     (+ :s (set ".!?,;:"))
+  ~{:break (+ :s (set ".!?,;:"))
     :word-char (if-not :break 1)
-    :word      (some :word-char)
-    :punct     (set ".!?,;:")
-    :main      (any (+ :s (capture :word) (capture :punct)))})
+    :word (some :word-char)
+    :punct (set ".!?,;:")
+    :main (any (+ :s (capture :word) (capture :punct)))})
 
 (defn- tokenize [text]
   (or (peg/match token-peg text) @[]))
@@ -76,11 +76,11 @@
           (array/push starts (ngram-key gram))))))
   chain)
 
-(defn reply [chain input &named max-words]
+(defn reply [chain input &named max-words rng]
   (default max-words 50)
+  (default rng (math/rng (os/time)))
   (let [{:transitions transitions :order order :starts starts} chain]
     (if (empty? transitions)
       ""
-      (let [rng (math/rng)
-            start (find-start transitions starts order rng input)]
+      (let [start (find-start transitions starts order rng input)]
         (walk transitions starts order rng start max-words)))))

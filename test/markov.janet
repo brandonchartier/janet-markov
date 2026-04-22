@@ -8,13 +8,13 @@
   # exercise tokenization through train by inspecting the resulting keys
   (keys ((markov/train text (markov/new-chain :order 1)) :transitions)))
 
-(assert (deep= (markov/train "" ) @{:transitions @{} :order 3 :starts @[]})
+(assert (deep= (markov/train "") @{:transitions @{} :order 3 :starts @[]})
         "empty input produces empty chain")
 
 # punctuation splits into its own token
 (let [chain (markov/train "Hello, world." (markov/new-chain :order 1))]
   (assert ((chain :transitions) "Hello") "Hello is a key")
-  (assert ((chain :transitions) ",")     "comma is a key")
+  (assert ((chain :transitions) ",") "comma is a key")
   (assert ((chain :transitions) "world") "world is a key"))
 
 # contractions stay intact
@@ -106,6 +106,31 @@
 (def fallback (markov/reply chain "xyz abc def"))
 (assert (string? fallback) "reply with no match returns a string")
 (assert (> (length fallback) 0) "reply with no match returns non-empty string")
+
+# chain with genuine branching for rng tests (10 distinct paths from "cat sat")
+(def branch-text
+  (string "the cat sat on the mat today. "
+          "the cat sat by the old fire. "
+          "the cat sat near the small door. "
+          "the cat sat above the tall shelf. "
+          "the cat sat under the wooden table. "
+          "the cat sat beside the open window. "
+          "the cat sat beyond the green garden. "
+          "the cat sat against the brick wall. "
+          "the cat sat within the cozy basket. "
+          "the cat sat among the fallen leaves."))
+(def bchain (markov/train branch-text (markov/new-chain :order 2)))
+
+# same rng seed produces identical replies (deterministic)
+(def det1 (markov/reply bchain "the cat sat" :rng (math/rng 42)))
+(def det2 (markov/reply bchain "the cat sat" :rng (math/rng 42)))
+(assert (= det1 det2) "same rng seed produces same reply")
+
+# default seeding (os/time) produces different replies across different seconds
+(def timed1 (markov/reply bchain "the cat sat"))
+(os/sleep 1)
+(def timed2 (markov/reply bchain "the cat sat"))
+(assert (not= timed1 timed2) "different seconds produce different replies")
 
 # reply respects max-words
 (def short (markov/reply chain "the cat sat" :max-words 4))
