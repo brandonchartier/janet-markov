@@ -41,23 +41,23 @@
 
 (defn- transitions-exist? [conn gram]
   (not (empty? (sql/eval conn
-                 "SELECT 1 FROM markov_transitions WHERE gram = :g LIMIT 1"
-                 {:g gram}))))
+                         "SELECT 1 FROM markov_transitions WHERE gram = :g LIMIT 1"
+                         {:g gram}))))
 
 (defn- sentence-start? [conn gram]
   (not (empty? (sql/eval conn
-                 "SELECT 1 FROM markov_starts WHERE gram = :g LIMIT 1"
-                 {:g gram}))))
+                         "SELECT 1 FROM markov_starts WHERE gram = :g LIMIT 1"
+                         {:g gram}))))
 
 (defn- random-next [conn gram]
   (let [r (sql/eval conn
-             "SELECT next FROM markov_transitions WHERE gram = :g ORDER BY RANDOM() LIMIT 1"
-             {:g gram})]
+                    "SELECT next FROM markov_transitions WHERE gram = :g ORDER BY RANDOM() LIMIT 1"
+                    {:g gram})]
     (when (not (empty? r)) ((r 0) :next))))
 
 (defn- random-sentence-start [conn]
   (let [r (sql/eval conn
-             ``SELECT ms.gram FROM markov_starts ms
+                    ``SELECT ms.gram FROM markov_starts ms
                WHERE EXISTS (SELECT 1 FROM markov_transitions WHERE gram = ms.gram)
                ORDER BY RANDOM() LIMIT 1``)]
     (when (not (empty? r)) ((r 0) :gram))))
@@ -81,21 +81,21 @@
 
 (defn- best-start [conn order rng input]
   (let [input-ngrams (map ngram-key (ngrams (tokenize input) order))
-        with-trans   (filter |(transitions-exist? conn $) input-ngrams)
-        at-sentence  (filter |(sentence-start? conn $) with-trans)]
+        with-trans (filter (fn [g] (transitions-exist? conn g)) input-ngrams)
+        at-sentence (filter (fn [g] (sentence-start? conn g)) with-trans)]
     (cond
       (not (empty? at-sentence)) (pick rng at-sentence)
-      (not (empty? with-trans))  (pick rng with-trans)
+      (not (empty? with-trans)) (pick rng with-trans)
       (random-sentence-start conn)
       (random-gram conn))))
 
 (defn- generate-step [conn order stop-after max-words words]
-  (let [key    (string/join (array/slice words (- (length words) order)) " ")
-        tok    (random-next conn key)
+  (let [key (string/join (array/slice words (- (length words) order)) " ")
+        tok (random-next conn key)
         words+ (if tok (array ;words tok) words)]
     (cond
-      (>= (length words) max-words)                             words
-      (nil? tok)                                                words
+      (>= (length words) max-words) words
+      (nil? tok) words
       (and (> (length words+) stop-after) (sentence-end? tok)) words+
       (generate-step conn order stop-after max-words words+))))
 

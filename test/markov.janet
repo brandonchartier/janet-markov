@@ -26,31 +26,31 @@
 # punctuation splits into its own token
 (let [chain (fresh :order 1)]
   (markov/train "Hello, world." chain)
-  (assert (some |(= "Hello" $) (query-grams (chain :conn))) "Hello is a gram")
-  (assert (some |(= "," $) (query-grams (chain :conn))) "comma is a gram")
-  (assert (some |(= "world" $) (query-grams (chain :conn))) "world is a gram"))
+  (assert (some (fn [x] (= "Hello" x)) (query-grams (chain :conn))) "Hello is a gram")
+  (assert (some (fn [x] (= "," x)) (query-grams (chain :conn))) "comma is a gram")
+  (assert (some (fn [x] (= "world" x)) (query-grams (chain :conn))) "world is a gram"))
 
 # contractions stay intact
 (let [chain (fresh :order 1)]
   (markov/train "don't stop, can't stop." chain)
-  (assert (some |(= "don't" $) (query-grams (chain :conn))) "don't is one token")
-  (assert (some |(= "can't" $) (query-grams (chain :conn))) "can't is one token"))
+  (assert (some (fn [x] (= "don't" x)) (query-grams (chain :conn))) "don't is one token")
+  (assert (some (fn [x] (= "can't" x)) (query-grams (chain :conn))) "can't is one token"))
 
 # hyphenated words stay intact
 (let [chain (fresh :order 1)]
   (markov/train "self-aware systems work." chain)
-  (assert (some |(= "self-aware" $) (query-grams (chain :conn))) "self-aware is one token"))
+  (assert (some (fn [x] (= "self-aware" x)) (query-grams (chain :conn))) "self-aware is one token"))
 
 # URLs are kept as atomic tokens, not split at punctuation
 (let [chain (fresh :order 1)]
   (markov/train "check out https://example.com/path?q=1 cool" chain)
-  (assert (some |(= "https://example.com/path?q=1" $) (query-grams (chain :conn))) "URL is a single gram")
-  (assert (not (some |(= "example" $) (query-grams (chain :conn)))) "URL is not split into fragments")
-  (assert (some |(= "check" $) (query-grams (chain :conn))) "words around a URL are still tokenized"))
+  (assert (some (fn [x] (= "https://example.com/path?q=1" x)) (query-grams (chain :conn))) "URL is a single gram")
+  (assert (not (some (fn [x] (= "example" x)) (query-grams (chain :conn)))) "URL is not split into fragments")
+  (assert (some (fn [x] (= "check" x)) (query-grams (chain :conn))) "words around a URL are still tokenized"))
 (let [chain (fresh :order 1)]
   (markov/train "visit http://example.com or https://foo.bar/baz today" chain)
-  (assert (some |(= "http://example.com" $) (query-grams (chain :conn))) "http URL is atomic")
-  (assert (some |(= "https://foo.bar/baz" $) (query-grams (chain :conn))) "https URL is atomic"))
+  (assert (some (fn [x] (= "http://example.com" x)) (query-grams (chain :conn))) "http URL is atomic")
+  (assert (some (fn [x] (= "https://foo.bar/baz" x)) (query-grams (chain :conn))) "https URL is atomic"))
 
 # UTF-8 characters pass through untouched.
 # Validated against a real Gutenberg text that contains curly quotes and em-dashes.
@@ -59,9 +59,9 @@
         curly-apos (string/from-bytes 0xe2 0x80 0x99)
         queequeg-key (string "Queequeg" curly-apos "s")]
     (markov/train (slurp "/tmp/moby-dick.txt") chain)
-    (assert (some |(= queequeg-key $) (query-grams (chain :conn)))
+    (assert (some (fn [x] (= queequeg-key x)) (query-grams (chain :conn)))
             "curly apostrophe stays intact: possessive is one token")
-    (assert (not (some |(= (string/from-bytes 0xe2) $) (query-grams (chain :conn))))
+    (assert (not (some (fn [x] (= (string/from-bytes 0xe2) x)) (query-grams (chain :conn))))
             "lone UTF-8 lead byte is not a chain key")))
 
 # ---------------------------------------------------------------------------
@@ -70,9 +70,9 @@
 
 (let [chain (fresh)]
   (markov/train "The cat sat. A dog ran." chain)
-  (assert (some |(string/has-prefix? "The cat" $) (query-starts (chain :conn)))
+  (assert (some (fn [x] (string/has-prefix? "The cat" x)) (query-starts (chain :conn)))
           "first sentence start is tracked")
-  (assert (some |(string/has-prefix? "A dog" $) (query-starts (chain :conn)))
+  (assert (some (fn [x] (string/has-prefix? "A dog" x)) (query-starts (chain :conn)))
           "post-period sentence start is tracked"))
 
 # ---------------------------------------------------------------------------
